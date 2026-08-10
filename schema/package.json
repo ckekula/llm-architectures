@@ -1,0 +1,8 @@
+{
+  "name": "schema",
+  "devDependencies": {
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
