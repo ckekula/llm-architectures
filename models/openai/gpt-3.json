@@ -1,0 +1,188 @@
+{
+  "overview": {
+    "name": "GPT-3",
+    "organization": "OpenAI",
+    "releaseDate": "2020-05-28",
+    "family": "GPT",
+    "paperUrl": "https://arxiv.org/abs/2005.14165",
+    "totalParameters": 175000000000,
+    "explanation": {
+      "whatIsIt": "GPT-3 is a 175-billion-parameter autoregressive Transformer language model developed by OpenAI.",
+      "howIsItBuilt": "It uses a 96-layer decoder-only Transformer with a 12288-dimensional hidden state, 96 attention heads, 49152-dimensional feed-forward layers, learned positional embeddings, and pre-layer normalization.",
+      "whyBuiltThisWay": "The architecture scales the GPT family substantially in model capacity while retaining the autoregressive Transformer design used for next-token prediction."
+    }
+  },
+
+  "io": {
+    "inputModality": "text",
+    "outputType": "next_token_logits",
+    "vocabSize": 50257,
+    "maxSequenceLength": 2048,
+    "explanation": {
+      "whatIsIt": "The model accepts tokenized text and produces logits for the next token.",
+      "howIsItBuilt": "Input text is converted into a sequence of tokens from a 50257-token vocabulary, with a maximum native context of 2048 tokens.",
+      "whyBuiltThisWay": "Autoregressive next-token prediction provides a general-purpose language modeling objective."
+    }
+  },
+
+  "tokenization": {
+    "algorithm": "byte_level_bpe",
+    "vocabSize": 50257,
+    "specialTokens": {},
+    "explanation": {
+      "whatIsIt": "GPT-3 uses the byte-level BPE tokenizer associated with the GPT-2 tokenizer.",
+      "howIsItBuilt": "Text is represented using byte-level subword units selected by byte-pair encoding.",
+      "whyBuiltThisWay": "Byte-level BPE provides broad text coverage while keeping the vocabulary manageable and allowing arbitrary text to be represented."
+    }
+  },
+
+  "embedding": {
+    "dimension": 12288,
+    "tiedWithOutputHead": true,
+    "embeddingDropout": 0.1,
+    "explanation": {
+      "whatIsIt": "The token embedding maps each vocabulary token into the model's 12288-dimensional hidden space.",
+      "howIsItBuilt": "A learned 50257 by 12288 embedding matrix is combined with learned positional embeddings before entering the Transformer.",
+      "whyBuiltThisWay": "The embedding dimension matches the Transformer residual-stream dimension and the input/output embedding weights are shared."
+    }
+  },
+
+  "positionalEncoding": {
+    "primitive": "learned_absolute",
+    "config": {
+      "appliedAt": "embedding",
+      "maxTrainedPosition": 2048
+    },
+    "explanation": {
+      "whatIsIt": "GPT-3 uses learned absolute positional embeddings.",
+      "howIsItBuilt": "A learned positional embedding is associated with each position up to the native 2048-token context length and added to the token embedding.",
+      "whyBuiltThisWay": "This provides the Transformer with explicit information about token order while keeping the positional mechanism simple."
+    }
+  },
+
+  "layerOrganization": {
+    "layers": {
+      "totalLayers": 96,
+      "blocks": [
+        {
+          "attention": {
+            "mechanism": {
+              "primitive": "multi_head_attention",
+              "config": {
+                "numQueryHeads": 96,
+                "numKeyValueHeads": 96,
+                "headDim": 128
+              }
+            },
+            "pattern": {
+              "primitive": "dense",
+              "config": {}
+            },
+            "kernel": {
+              "primitive": "softmax",
+              "config": {}
+            },
+            "causal": true,
+            "explanation": {
+              "whatIsIt": "GPT-3 uses standard multi-head self-attention.",
+              "howIsItBuilt": "The 12288-dimensional hidden state is projected into 96 query, key, and value heads, each with dimension 128. Causal masking prevents access to future tokens.",
+              "whyBuiltThisWay": "Multi-head attention allows the model to represent multiple relationships between tokens while causal masking preserves autoregressive generation."
+            }
+          },
+
+          "feedForward": {
+            "primitive": "dense_mlp",
+            "config": {
+              "hiddenDim": 49152,
+              "activation": {
+                "primitive": "gelu",
+                "config": {}
+              },
+              "gating": {
+                "primitive": "none",
+                "config": {}
+              }
+            },
+            "explanation": {
+              "whatIsIt": "Each Transformer block contains a dense feed-forward network.",
+              "howIsItBuilt": "The 12288-dimensional residual stream is projected to 49152 dimensions, passed through GELU, and projected back to 12288 dimensions.",
+              "whyBuiltThisWay": "The larger intermediate dimension provides substantial nonlinear transformation capacity within each Transformer layer."
+            }
+          },
+
+          "normalization": {
+            "primitive": "layer_norm",
+            "config": {
+              "placement": "pre_norm",
+              "epsilon": 0.00001
+            },
+            "explanation": {
+              "whatIsIt": "GPT-3 uses LayerNorm in a pre-normalization Transformer configuration.",
+              "howIsItBuilt": "Layer normalization is applied before the attention and feed-forward sublayers.",
+              "whyBuiltThisWay": "Pre-normalization improves optimization and training stability for very deep Transformers."
+            }
+          },
+
+          "residual": {
+            "primitive": "standard_additive",
+            "config": {
+              "numStreams": 1
+            },
+            "explanation": {
+              "whatIsIt": "Each Transformer block uses a standard additive residual stream.",
+              "howIsItBuilt": "The output of each sublayer is added to its corresponding residual input.",
+              "whyBuiltThisWay": "Residual connections allow information and gradients to propagate effectively through the deep network."
+            }
+          },
+
+          "sublayerOrder": [
+            "norm",
+            "attention",
+            "residual",
+            "norm",
+            "feed_forward",
+            "residual"
+          ],
+          "attentionDropout": 0.1,
+          "residualDropout": 0.1
+        }
+      ],
+      "pattern": "uniform"
+    },
+    "explanation": {
+      "whatIsIt": "GPT-3 consists of 96 repeated Transformer blocks.",
+      "howIsItBuilt": "All 96 layers use the same architectural configuration: causal multi-head self-attention followed by a dense GELU feed-forward network, with pre-layer normalization and residual connections.",
+      "whyBuiltThisWay": "A uniform deep stack provides a scalable architecture in which model capacity increases primarily through depth and width."
+    }
+  },
+
+  "outputHead": {
+    "tiedWithEmbedding": true,
+    "finalNormalization": true,
+    "explanation": {
+      "whatIsIt": "The output head converts the final Transformer representation into next-token logits.",
+      "howIsItBuilt": "The final hidden representation is normalized and projected into the vocabulary space using weights tied to the input token embedding.",
+      "whyBuiltThisWay": "Weight tying reduces parameter redundancy while maintaining a vocabulary-sized output distribution."
+    }
+  },
+
+  "contextArchitecture": {
+    "trainedContextLength": 2048,
+    "slidingWindow": 2048,
+    "explanation": {
+      "whatIsIt": "GPT-3 has a native context length of 2048 tokens.",
+      "howIsItBuilt": "Causal dense self-attention can attend across the preceding tokens within the 2048-token sequence.",
+      "whyBuiltThisWay": "The fixed context establishes the maximum sequence length used by the original model architecture."
+    }
+  },
+
+  "kvCacheConfig": {
+    "keyBytesPerElement": 2,
+    "valueBytesPerElement": 2,
+    "explanation": {
+      "whatIsIt": "The KV cache stores previously computed key and value tensors for autoregressive generation.",
+      "howIsItBuilt": "GPT-3 uses 96 key-value heads per layer, each with a head dimension of 128. The cache representation is modeled here using 2 bytes per element.",
+      "whyBuiltThisWay": "Caching keys and values avoids recomputing attention projections for previously generated tokens."
+    }
+  }
+}

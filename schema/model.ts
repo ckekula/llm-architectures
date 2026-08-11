@@ -178,7 +178,6 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
       count * calculateFeedForwardParameters(
         dModel,
         block.feedForward,
-        block.moe,
       );
 
     if (
@@ -238,6 +237,7 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
     outputHead,
     other,
     total,
+
     explanation: parameterAccountingExplanation(),
   };
 }
@@ -285,7 +285,6 @@ function calculateAttentionParameters(
 function calculateFeedForwardParameters(
   dModel: number,
   ffn: FeedForwardNetwork,
-  moe?: any,
 ): number {
   const hiddenDim = ffn.config.hiddenDim;
 
