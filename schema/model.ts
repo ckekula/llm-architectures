@@ -227,17 +227,6 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
     outputHead +
     other;
 
-  const reported =
-    arch.overview.totalParameters;
-
-  const differenceFromReported =
-    total - reported;
-
-  const differencePercent =
-    reported === 0
-      ? 0
-      : (differenceFromReported / reported) * 100;
-
   return {
     embedding,
     positionalEncoding,
@@ -249,9 +238,6 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
     outputHead,
     other,
     total,
-    differenceFromReported,
-    differencePercent,
-
     explanation: parameterAccountingExplanation(),
   };
 }
