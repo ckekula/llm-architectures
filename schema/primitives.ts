@@ -37,35 +37,29 @@ export enum PositionalEncodingType {
  *
  * This avoids storing redundant information that could drift.
  */
-export function familyOf(
-  type: PositionalEncodingType,
-): PositionalEncodingFamily {
-  switch (type) {
-    case PositionalEncodingType.LearnedAbsolute:
-    case PositionalEncodingType.Sinusoidal:
-      return PositionalEncodingFamily.Absolute;
+const POSITIONAL_ENCODING_FAMILY: Record<PositionalEncodingType, PositionalEncodingFamily> = {
+  [PositionalEncodingType.LearnedAbsolute]: PositionalEncodingFamily.Absolute,
+  [PositionalEncodingType.Sinusoidal]: PositionalEncodingFamily.Absolute,
+  [PositionalEncodingType.RoPE]: PositionalEncodingFamily.Rotary,
+  [PositionalEncodingType.ALiBi]: PositionalEncodingFamily.Bias,
+  [PositionalEncodingType.RelativeBias]: PositionalEncodingFamily.Relative,
+  [PositionalEncodingType.None]: PositionalEncodingFamily.None,
+};
 
-    case PositionalEncodingType.RoPE:
-      return PositionalEncodingFamily.Rotary;
-
-    case PositionalEncodingType.ALiBi:
-      return PositionalEncodingFamily.Bias;
-
-    case PositionalEncodingType.RelativeBias:
-      return PositionalEncodingFamily.Relative;
-
-    case PositionalEncodingType.None:
-      return PositionalEncodingFamily.None;
-  }
+export function familyOf(type: PositionalEncodingType): PositionalEncodingFamily {
+  return POSITIONAL_ENCODING_FAMILY[type];
 }
 
 // -----------------------------------------------------------------------------
 // Attention
+// Split into three independent axes:
+//  - Mechanism: how Q/K/V are constructed and shared across heads.
+//  - Pattern:   which tokens are allowed to attend to which other tokens.
+//  - Kernel:    the score function itself (softmax vs. a linear-attention
+//               approximation). Orthogonal to Mechanism — a linear-attention
+//               model can still choose MHA- or MQA-style K/V sharing.
 // -----------------------------------------------------------------------------
 
-/**
- * How Q/K/V heads are constructed and shared.
- */
 export enum AttentionMechanism {
   MHA = 'multi_head_attention',
   MQA = 'multi_query_attention',
@@ -73,9 +67,6 @@ export enum AttentionMechanism {
   MLA = 'multi_head_latent_attention',
 }
 
-/**
- * Which tokens are allowed to interact.
- */
 export enum AttentionPattern {
   Dense = 'dense',
   SlidingWindow = 'sliding_window',
@@ -83,9 +74,6 @@ export enum AttentionPattern {
   Sparse = 'sparse',
 }
 
-/**
- * The mathematical kernel used to calculate attention scores.
- */
 export enum AttentionKernel {
   Softmax = 'softmax',
   Linear = 'linear',
@@ -113,9 +101,13 @@ export enum NormPlacement {
 
 export enum FFNType {
   Dense = 'dense_mlp',
+  GatedLinearUnit = 'gated_linear_unit',
   MoE = 'mixture_of_experts',
 }
 
+// `ActivationFunction` is the elementwise nonlinearity. `FFNGating` is a
+// separate architectural axis: whether the FFN uses a gated formulation
+// (e.g. SwiGLU = SiLU activation + a GLU-style gating structure).
 export enum ActivationFunction {
   ReLU = 'relu',
   GELU = 'gelu',
@@ -147,4 +139,3 @@ export enum ResidualType {
   Standard = 'standard_additive',
   Parallel = 'parallel_streams',
 }
-

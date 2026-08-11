@@ -35,10 +35,6 @@ import type { Explanation } from './base';
 
 import { CONCEPT_EXPLANATIONS } from './explanations';
 
-// =============================================================================
-// LLMArchitecture
-// =============================================================================
-
 export class LLMArchitecture {
   constructor(
     public overview: ModelOverview,
@@ -100,29 +96,12 @@ export class LLMArchitecture {
     return block;
   }
 
-  /**
-   * Plain-data projection for persistence.
-   *
-   * Derived properties are deliberately NOT serialized as authoritative
-   * architecture data.
-   */
+  // Plain-data projection for JSON/YAML export.
   toJSON(): Record<string, unknown> {
-    return {
-      overview: this.overview,
-      io: this.io,
-      tokenization: this.tokenization,
-      embedding: this.embedding,
-      positionalEncoding: this.positionalEncoding,
-      layerOrganization: this.layerOrganization,
-      outputHead: this.outputHead,
-      contextArchitecture: this.contextArchitecture,
-      kvCacheConfig: this.kvCacheConfig,
-    };
+    return { ...this } as Record<string, unknown>;
   }
 
-  static fromJSON(
-    data: Record<string, any>,
-  ): LLMArchitecture {
+  static fromJSON(data: Record<string, any>): LLMArchitecture {
     return new LLMArchitecture(
       data.overview,
       data.io,
@@ -137,13 +116,7 @@ export class LLMArchitecture {
   }
 }
 
-// =============================================================================
-// Parameter accounting
-// =============================================================================
-
-export function computeParameterAccounting(
-  arch: LLMArchitecture,
-): ParameterAccounting {
+export function computeParameterAccounting(arch: LLMArchitecture): ParameterAccounting {
   const dModel = arch.hiddenDimension;
   const vocabSize = arch.tokenization.vocabSize;
 
@@ -283,9 +256,7 @@ export function computeParameterAccounting(
   };
 }
 
-// =============================================================================
 // Parameter helpers
-// =============================================================================
 
 function calculateAttentionParameters(
   dModel: number,
@@ -448,10 +419,7 @@ function countBlockOccurrences<T>(
   return counts;
 }
 
-// =============================================================================
 // KV cache
-// =============================================================================
-
 export function computeKVCache(
   arch: LLMArchitecture,
   sequenceLength: number,
@@ -514,10 +482,7 @@ export function computeKVCache(
   };
 }
 
-// =============================================================================
 // Generic explanations for derived concepts
-// =============================================================================
-
 function parameterAccountingExplanation(): Explanation {
   return {
     ...CONCEPT_EXPLANATIONS.parameterAccounting,
@@ -530,10 +495,7 @@ function kvCacheExplanation(): Explanation {
   };
 }
 
-// =============================================================================
 // Architecture diff
-// =============================================================================
-
 export interface DiffEntry {
   path: string;
   a: unknown;

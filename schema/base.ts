@@ -19,10 +19,7 @@ export interface Explainable {
  * `config` contains the concrete numbers/configuration.
  * `rationale` explains why THIS model uses this choice.
  */
-export interface ArchitecturalChoice<
-  TPrimitive extends string,
-  TConfig,
-> {
+export interface ArchitecturalChoice<TPrimitive extends string, TConfig> {
   primitive: TPrimitive;
   config: TConfig;
   rationale?: string;
@@ -45,46 +42,35 @@ export interface LayerPattern<TBlock> {
   pattern: 'uniform' | number[];
 }
 
-export function resolveLayer<TBlock>(
-  lp: LayerPattern<TBlock>,
-  layerIndex: number,
-): TBlock {
+export function resolveLayer<TBlock>(lp: LayerPattern<TBlock>, layerIndex: number): TBlock {
   if (layerIndex < 0 || layerIndex >= lp.totalLayers) {
-    throw new RangeError(
-      `Layer index ${layerIndex} outside [0, ${lp.totalLayers - 1}]`,
-    );
+    throw new RangeError(`Layer index ${layerIndex} outside [0, ${lp.totalLayers - 1}]`);
   }
 
   if (lp.pattern === 'uniform') {
     if (lp.blocks.length !== 1) {
-      throw new Error(
-        `A uniform LayerPattern must contain exactly one block.`,
-      );
+      throw new Error(`A uniform LayerPattern must contain exactly one block.`);
     }
 
-    const block = lp.blocks[0];
-    if (block === undefined) {
+    const firstBlock = lp.blocks[0];
+    if (firstBlock === undefined) {
       throw new Error(`Uniform LayerPattern is missing its single block.`);
     }
 
-    return block;
+    return firstBlock;
   }
 
   const blockIndex = lp.pattern[layerIndex];
 
   if (blockIndex === undefined) {
-    throw new RangeError(
-      `No pattern entry for layer ${layerIndex} ` +
-        `(totalLayers=${lp.totalLayers})`,
+    throw new RangeError(`No pattern entry for layer ${layerIndex} ` + `(totalLayers=${lp.totalLayers})`,
     );
   }
 
   const block = lp.blocks[blockIndex];
 
   if (block === undefined) {
-    throw new RangeError(
-      `Pattern for layer ${layerIndex} references invalid block ${blockIndex}.`,
-    );
+    throw new RangeError(`Pattern for layer ${layerIndex} references invalid block ${blockIndex}.`);
   }
 
   return block;

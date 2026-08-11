@@ -22,11 +22,7 @@ import {
   ResidualType,
 } from './primitives';
 
-import type {
-  ArchitecturalChoice,
-  Explainable,
-  LayerPattern,
-} from './base';
+import type { ArchitecturalChoice, Explainable, LayerPattern } from './base';
 
 export interface ModelOverview extends Explainable {
   name: string;
@@ -37,19 +33,8 @@ export interface ModelOverview extends Explainable {
   paperUrl?: string;
   license?: string;
 
-  /**
-   * Reported/citable parameter count.
-   *
-   * This is intentionally authored rather than calculated because papers
-   * often report rounded values such as "175B".
-   */
-  totalParameters: number;
-
-  /**
-   * For MoE models, reported active parameters per forward pass.
-   * Dense models may omit this because it is derivable.
-   */
-  reportedActiveParameters?: number;
+  totalParameters: number; // Reported/citable parameter count (intentionally authored rather than calculated).
+  activeParameters?: number; // Reported for MoE models. Dense models may omit this because it is derivable.
 }
 
 export interface IOArchitecture extends Explainable {
@@ -62,9 +47,7 @@ export interface IOArchitecture extends Explainable {
 
 export interface Tokenization extends Explainable {
   algorithm: TokenizerAlgorithm;
-
   vocabSize: number;
-
   specialTokens: {
     bos?: string;
     eos?: string;
@@ -77,52 +60,25 @@ export interface Tokenization extends Explainable {
 export interface EmbeddingArchitecture extends Explainable {
   dimension: number;
   tiedWithOutputHead: boolean;
-  embeddingScale?: number; // Multiplicative scaling applied to embeddings, if any.
-  embeddingDropout?: number; // Dropout applied after embedding, if any.
+  embeddingScale?: number; // Multiplicative scaling applied to embeddings.
+  embeddingDropout?: number; // Dropout applied after embedding.
 }
 
 export type PositionalEncoding = ArchitecturalChoice<
   PositionalEncodingType,
   {
-    appliedAt: 'embedding' | 'attention'; // Where the positional mechanism is applied.
+    appliedAt: 'embedding' | 'attention';
 
-    ropeTheta?: number; // RoPE-specific configuration.
-    maxTrainedPosition?: number; // Highest position used during native training.
-    scalingFactor?: number; // Optional scaling/extension details.
+    ropeTheta?: number;
+    maxTrainedPosition?: number
+    scalingFactor?: number;
   }
 > &
   Explainable;
 
-export interface TransformerBlock extends Explainable {
-  attention: Attention;
-  feedForward: FeedForwardNetwork;
-  normalization: Normalization;
-  residual: ResidualArchitecture;
-
-  /**
-   * Explicit execution order.
-   *
-   * Kept for now as a compact representation of the block's computation
-   * structure. This can later be replaced by a full computation graph.
-   */
-  sublayerOrder: string[];
-  moe?: MixtureOfExperts; // Present iff feedForward.primitive === FFNType.MoE.
-  attentionDropout?: number;
-  residualDropout?: number;
-}
-
 // -----------------------------------------------------------------------------
 // Attention
 // -----------------------------------------------------------------------------
-
-export interface AttentionConfig {
-  numQueryHeads: number;
-  numKeyValueHeads: number;
-  headDim: number;
-  causal: boolean;
-
-  windowSize?: number; // Window size is meaningful for local/sliding-window patterns.
-}
 
 export interface AttentionMechanismConfig {
   numQueryHeads: number;
@@ -131,61 +87,27 @@ export interface AttentionMechanismConfig {
 }
 
 export interface AttentionPatternConfig {
+  causal: boolean;
   windowSize?: number;
 }
 
-export interface Attention extends Explainable {
-  /**
-   * How Q/K/V heads are constructed and shared.
-   *
-   * Examples:
-   * - MHA: numQueryHeads === numKeyValueHeads
-   * - MQA: numKeyValueHeads === 1
-   * - GQA: numKeyValueHeads < numQueryHeads
-   * - MLA: latent attention configuration
-   */
-  mechanism: ArchitecturalChoice<
-    AttentionMechanism,
-    AttentionMechanismConfig
-  >;
+export type AttentionKernelConfig = ArchitecturalChoice<AttentionKernel, Record<string, never>> & Explainable;
 
-  /**
-   * Which tokens are allowed to interact.
-   *
-   * Examples:
-   * - Dense
-   * - SlidingWindow
-   * - LocalBanded
-   */
-  pattern: ArchitecturalChoice<
-    AttentionPattern,
-    AttentionPatternConfig
-  >;
-
-  /**
-   * Mathematical kernel used to calculate attention.
-   */
-  kernel: ArchitecturalChoice<
-    AttentionKernel,
-    Record<string, never>
-  >;
-
-  causal: boolean; // Whether the attention operation is causally masked.
+export interface Attention {
+  mechanism: ArchitecturalChoice <AttentionMechanism, AttentionMechanismConfig>;
+  pattern: ArchitecturalChoice <AttentionPattern, AttentionPatternConfig>;
+  kernel: ArchitecturalChoice <AttentionKernel, AttentionKernelConfig>;
 }
+
 // -----------------------------------------------------------------------------
 // Feed-forward network
 // -----------------------------------------------------------------------------
 
 export interface FeedForwardConfig {
   hiddenDim: number;
-  activation: ArchitecturalChoice<
-    ActivationFunction,
-    Record<string, never>
-  >;
-  gating: ArchitecturalChoice<
-    FFNGating,
-    Record<string, never>
-  >;
+  activation: ArchitecturalChoice<ActivationFunction, Record<string, never>>;
+  // Whether the FFN uses a gated formulation. Independent of `activation`.
+  gating: ArchitecturalChoice<FFNGating, Record<string, never>>;
 }
 
 export type FeedForwardNetwork = ArchitecturalChoice<
@@ -225,11 +147,19 @@ export type ResidualArchitecture = ArchitecturalChoice<
 > &
   Explainable;
 
-/**
- * Cross-cutting index for encyclopedia browsing.
- *
- * The actual activation configuration remains owned by the FFN.
- */
+export interface TransformerBlock extends Explainable {
+  attention: Attention;
+  feedForward: FeedForwardNetwork;
+  moe?: MixtureOfExperts;
+  normalization: Normalization;
+  residual: ResidualArchitecture;
+  sublayerOrder: string[];
+
+  attentionDropout?: number;
+  residualDropout?: number;
+}
+
+// The actual activation configuration remains owned by the FFN.
 export interface ActivationProfile extends Explainable {
   usage: Record<string, ActivationFunction>;
 }
@@ -240,16 +170,10 @@ export interface LayerOrganization extends Explainable {
 
 export interface OutputHead extends Explainable {
   tiedWithEmbedding: boolean;
-
   finalNormalization: boolean;
 }
 
-/**
- * ParameterAccounting is a computed result, not model-authored architecture.
- *
- * `reportedTotal` is kept separately in ModelOverview because it represents
- * the citable number reported by the model authors.
- */
+// Parameter accounting — DERIVED, not authored.
 export interface ParameterAccounting extends Explainable {
   embedding: number;
   positionalEncoding: number;
@@ -270,19 +194,12 @@ export interface ParameterAccounting extends Explainable {
 // KV cache — DERIVED
 // -----------------------------------------------------------------------------
 
-/**
- * KV cache configuration describes the storage representation.
- *
- * Actual cache size is calculated from the architecture.
- */
+// Actual cache size is calculated from the architecture.
 export interface KVCacheConfig extends Explainable {
   keyBytesPerElement: number;
   valueBytesPerElement: number;
 }
 
-/**
- * Derived KV cache result.
- */
 export interface KVCache extends Explainable {
   bytesPerTokenPerLayer: number;
   bytesPerToken: number;
