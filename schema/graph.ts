@@ -2,7 +2,11 @@
  * graph.ts
  * --------
  * A DERIVED projection of `LLMArchitecture` into nodes/edges suitable for
- * ELK.js layout + React Flow rendering.
+ * ELK.js layout + React Flow rendering: computed on demand from the schema.
+ *
+ * No positions (x/y) are produced here — that's ELK's job, downstream,
+ * client-side. This module only decides WHAT nodes and edges exist and how
+ * they nest, not WHERE they sit on screen.
  *
  * Every node carries a `path`: the same dotted-path convention `walk()`
  * uses to build `DiffEntry.path` in model.ts (e.g.
@@ -10,7 +14,11 @@
  * single link between "a box in the diagram" and "an entry in the
  * encyclopedia / a diff row" — no separate id-to-path table to maintain.
  *
- * Repeated layers are NOT unrolled into one node per layer.
+ * Repeated layers are NOT unrolled into one node per layer. A model like
+ * GPT-3 (96 layers, 2 distinct blocks) renders as 2 block subgraphs inside
+ * a single "layer stack" compound node, each annotated with how many
+ * layers use it — mirroring the LayerPattern design (base.ts) that avoids
+ * allocating N objects for N layers.
  */
 import type { LLMArchitecture } from './model';
 import type { LayerPattern } from './base';
@@ -41,9 +49,12 @@ export interface GraphNode {
     | 'residual'
     | 'outputHead'
     | 'unknown';
-  path: string; // Dotted path into the LLMArchitecture instance
-  children?: GraphNode[]; // ELK/React Flow compound nodes: nested structure, not a second graph.
-  meta?: Record<string, unknown>; // Diagram-only annotations that aren't schema fields, e.g. repeat counts.
+  /** Dotted path into the LLMArchitecture instance — see module doc. */
+  path: string;
+  /** ELK/React Flow compound nodes: nested structure, not a second graph. */
+  children?: GraphNode[];
+  /** Diagram-only annotations that aren't schema fields, e.g. repeat counts. */
+  meta?: Record<string, unknown>;
 }
 
 export interface GraphEdge {
@@ -137,18 +148,25 @@ function buildLayerStackNode(layers: LayerPattern<TransformerBlock>, edges: Grap
 
   // Edges between distinct block types, in the order they actually
   // transition in the pattern (deduped) — e.g. GPT-3's dense/local-banded
-  // alternation becomes one bidirectional pair of edges, not 95 of them.
+  // alternation becomes ONE edge, not one per direction. Keying on the
+  // UNORDERED pair (not `${from}->${to}`) matters here: a strictly
+  // alternating pattern produces both a 0->1 and a 1->0 transition, and
+  // adding both creates an actual cycle for ELK's layered algorithm, which
+  // then has to arbitrarily break it — observed in practice as block-1
+  // being placed above block-0 despite block-0 being layer 0. One edge
+  // (direction = first occurrence) conveys "these alternate" without
+  // giving ELK a cycle to resolve.
   if (layers.pattern !== 'uniform') {
-    const seenTransitions = new Set<string>();
+    const seenPairs = new Set<string>();
     for (let i = 0; i < layers.pattern.length - 1; i++) {
       const from = layers.pattern[i];
       const to = layers.pattern[i + 1];
       if (from === undefined || to === undefined || from === to) continue;
-      const key = `${from}->${to}`;
-      if (seenTransitions.has(key)) continue;
-      seenTransitions.add(key);
+      const pairKey = [from, to].sort((a, b) => a - b).join('-');
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
       edges.push({
-        id: `block-transition-${key}`,
+        id: `block-transition-${from}-${to}`,
         source: `block-${from}`,
         target: `block-${to}`,
         label: 'alternates',
@@ -183,7 +201,7 @@ function buildBlockNode(
   let previousStepId: string | null = null;
   for (const step of block.sublayerOrder) {
     const stepId = `${blockId}-step-${stepCounter}`;
-    const stepNode = buildSublayerStepNode(step, stepId, blockPath, block);
+    const stepNode = buildSublayerStepNode(step, stepId, blockPath, block, edges);
     children.push(stepNode);
     if (previousStepId) {
       edges.push({ id: `${blockId}-edge-${stepCounter}`, source: previousStepId, target: stepId });
@@ -210,11 +228,23 @@ function buildSublayerStepNode(
   stepId: string,
   blockPath: string,
   block: TransformerBlock,
+  edges: GraphEdge[],
 ): GraphNode {
   const normalized = step.toLowerCase();
 
   if (normalized === 'attention') {
     const attentionPath = `${blockPath}.attention`;
+    const mechanismId = `${stepId}-mechanism`;
+    const patternId = `${stepId}-pattern`;
+    const kernelId = `${stepId}-kernel`;
+
+    // Attention's own 3 sub-choices are a chain too (mechanism -> pattern
+    // -> kernel), not just siblings — previously these were only nested as
+    // children with no edges between them, which is why they rendered as
+    // disconnected dots.
+    edges.push({ id: `${stepId}-edge-0`, source: mechanismId, target: patternId });
+    edges.push({ id: `${stepId}-edge-1`, source: patternId, target: kernelId });
+
     return {
       id: stepId,
       label: 'Attention',
@@ -222,19 +252,19 @@ function buildSublayerStepNode(
       path: attentionPath,
       children: [
         {
-          id: `${stepId}-mechanism`,
+          id: mechanismId,
           label: block.attention.mechanism.primitive,
           category: 'attention.mechanism',
           path: `${attentionPath}.mechanism`,
         },
         {
-          id: `${stepId}-pattern`,
+          id: patternId,
           label: block.attention.pattern.primitive,
           category: 'attention.pattern',
           path: `${attentionPath}.pattern`,
         },
         {
-          id: `${stepId}-kernel`,
+          id: kernelId,
           label: block.attention.kernel.primitive,
           category: 'attention.kernel',
           path: `${attentionPath}.kernel`,
@@ -245,28 +275,39 @@ function buildSublayerStepNode(
 
   if (normalized === 'ffn' || normalized === 'feedforward' || normalized === 'feed_forward') {
     const ffnPath = `${blockPath}.feedForward`;
+    const activationId = `${stepId}-activation`;
+    const gatingId = `${stepId}-gating`;
+
     const children: GraphNode[] = [
       {
-        id: `${stepId}-activation`,
+        id: activationId,
         label: block.feedForward.config.activation.primitive,
         category: 'feedForward.activation',
         path: `${ffnPath}.config.activation`,
       },
       {
-        id: `${stepId}-gating`,
+        id: gatingId,
         label: block.feedForward.config.gating.primitive,
         category: 'feedForward.gating',
         path: `${ffnPath}.config.gating`,
       },
     ];
+
+    // Same fix as attention: activation -> gating -> moe (when present) is
+    // a chain, not disconnected siblings.
+    edges.push({ id: `${stepId}-edge-0`, source: activationId, target: gatingId });
+
     if (block.moe) {
+      const moeId = `${stepId}-moe`;
       children.push({
-        id: `${stepId}-moe`,
+        id: moeId,
         label: block.moe.primitive,
         category: 'moe',
         path: `${blockPath}.moe`,
       });
+      edges.push({ id: `${stepId}-edge-1`, source: gatingId, target: moeId });
     }
+
     return { id: stepId, label: 'Feed-Forward', category: 'feedForward', path: ffnPath, children };
   }
 
