@@ -76,14 +76,14 @@ export const gpt3 = new LLMArchitecture(
     totalParameters: 175_000_000_000,
   },
   { explanation, inputModality: 'text', outputType: 'next_token_logits', vocabSize: 50257, maxSequenceLength: 2048 },
-  { explanation, algorithm: TokenizerAlgorithm.ByteLevelBPE, vocabSize: 50257, specialTokens: ['<|endoftext|>'] },
+  { explanation, algorithm: TokenizerAlgorithm.ByteLevelBPE, vocabSize: 50257, specialTokens: {} },
   { explanation, dimension: DIM, tiedWithOutputHead: true, embeddingDropout: 0.1 },
   {
     primitive: PositionalEncodingType.LearnedAbsolute,
     config: { appliedAt: 'embedding', maxTrainedPosition: 2048 },
     explanation,
   },
-  { explanation, layers: { totalLayers: NUM_LAYERS, blocks: [denseBlock, sparseBlock], pattern } },
+  { decoder: { explanation, layers: { totalLayers: NUM_LAYERS, blocks: [denseBlock, sparseBlock], pattern } } },
   { explanation, tiedWithEmbedding: true, finalNormalization: true },
   { explanation, trainedContextLength: 2048 },
 );

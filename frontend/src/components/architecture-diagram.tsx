@@ -3,12 +3,6 @@ import { ReactFlow, Controls, Handle, Position, MarkerType, type Node, type Edge
 import { buildArchitectureGraph, type GraphNode, type LLMArchitecture } from 'schema';
 import { layoutArchitectureGraph } from '../lib/layout';
 
-const DEBUG = false;
-const DEBUG_LABELS = false;
-function debugLog(label: string, payload: unknown): void {
-  if (DEBUG) console.log(`[ArchitectureDiagram] ${label}`, payload);
-}
-
 interface ArchitectureDiagramProps {
   architecture: LLMArchitecture;
 }
@@ -33,6 +27,10 @@ const CATEGORY_COLOR: Partial<Record<GraphNode['category'], string>> = {
   'attention.mechanism': 'bg-amber-100 border-amber-300',
   'attention.pattern': 'bg-amber-100 border-amber-300',
   'attention.kernel': 'bg-amber-100 border-amber-300',
+  crossAttention: 'bg-violet-50 border-violet-300',
+  'crossAttention.mechanism': 'bg-violet-100 border-violet-300',
+  'crossAttention.pattern': 'bg-violet-100 border-violet-300',
+  'crossAttention.kernel': 'bg-violet-100 border-violet-300',
   feedForward: 'bg-emerald-50 border-emerald-300',
   'feedForward.activation': 'bg-emerald-100 border-emerald-300',
   'feedForward.gating': 'bg-emerald-100 border-emerald-300',
@@ -72,6 +70,13 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
 }
 
 const nodeTypes = { archNode: ArchNode, containerNode: ContainerNode };
+
+// Toggle off to silence without removing the instrumentation.
+const DEBUG = true;
+const DEBUG_LABELS = true; // shows each node's id on-canvas, next to its label
+function debugLog(label: string, payload: unknown): void {
+  if (DEBUG) console.log(`[ArchitectureDiagram] ${label}`, payload);
+}
 
 export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) {
   const graph = useMemo(() => {

@@ -1,10 +1,9 @@
 /**
  * categories.ts
  * -------------
- * The architectural categories.
- *
- * These describe what an architecture contains.
- * The primitive fields describe what each component IS.
+ * The architectural categories. Each interface is plain data (the
+ * "contains" side); semantics come from the `primitive` fields, which are
+ * ArchitecturalChoice<...> pointing into primitives.ts (the "is" side).
  */
 import {
   TokenizerAlgorithm,
@@ -30,7 +29,7 @@ export interface ModelOverview extends Explainable {
   family?: string; // e.g. "Llama 3"
   paperUrl?: string;
   license?: string;
-
+  
   totalParameters: number; // Reported/citable parameter count (intentionally authored rather than calculated).
   activeParameters?: number; // Reported for MoE models. Dense models may omit this because it is derivable.
 }
@@ -155,13 +154,26 @@ export type ResidualArchitecture = ArchitecturalChoice<
   Explainable;
 
 // 6. Transformer block — composes 7, 8, 9?, 10, 11 plus sublayer order.
-// This is the ONE canonical block definition.
+// This is the ONE canonical block definition; repetition is handled by
+// LayerPattern in category 13.
 export interface TransformerBlock extends Explainable {
   attention: Attention;
+  /**
+   * A second attention sub-layer that attends over ANOTHER stack's output
+   * present iff `sublayerOrder` includes a cross-attention step. Reuses
+   * the same `Attention` shape as self-attention.
+   */
+  crossAttention?: Attention;
   feedForward: FeedForwardNetwork;
   moe?: MixtureOfExperts;
   normalization: Normalization;
   residual: ResidualArchitecture;
+  /**
+   * Order sublayers execute in, e.g. ['norm','attention','residual_add','norm','ffn','residual_add']
+   * (pre-norm) or ['attention','residual_add','norm','ffn','residual_add','norm']
+   * (post-norm, e.g. the original Transformer). A 'cross_attention' entry
+   * requires `crossAttention` to be set.
+   */
   sublayerOrder: string[];
 
   attentionDropout?: number;
@@ -174,9 +186,23 @@ export interface ActivationProfile extends Explainable {
   usage: Record<string, ActivationFunction>;
 }
 
-// 13. Layer organization
+// 13. Layer organization — one stack (a LayerPattern of TransformerBlocks).
+// Reused as-is for encoder and decoder stacks; the encoder/decoder split
+// itself lives one level up, in `ModelStacks`.
 export interface LayerOrganization extends Explainable {
   layers: LayerPattern<TransformerBlock>;
+}
+
+/**
+ * A model has an encoder stack, a decoder stack, or both:
+ *  - decoder-only (GPT-style): { decoder }
+ *  - encoder-only (BERT-style): { encoder }
+ *  - encoder-decoder (the original Transformer, T5): { encoder, decoder }
+ * `LLMArchitecture`'s constructor enforces at least one is present
+ */
+export interface ModelStacks {
+  encoder?: LayerOrganization;
+  decoder?: LayerOrganization;
 }
 
 // 14. Output head
@@ -190,6 +216,7 @@ export interface ParameterAccounting extends Explainable {
   embedding: number;
   positionalEncoding: number;
   attention: number;
+  crossAttention?: number; // Cross-attention params, summed across all blocks that have crossAttention
   feedForward: number;
   normalization: number;
   outputHead: number;

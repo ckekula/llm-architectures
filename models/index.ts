@@ -7,6 +7,7 @@
  */
 import type { LLMArchitecture } from 'schema';
 import { gpt3 } from './openai/gpt3';
+import { originalTransformer } from './google/transformer';
 
 export interface ModelKey {
   org: string;
@@ -15,6 +16,7 @@ export interface ModelKey {
 
 const MODEL_REGISTRY: Record<string, LLMArchitecture> = {
   'openai/gpt-3': gpt3,
+  'google/transformer': originalTransformer,
 };
 
 export function getModel(org: string, slug: string): LLMArchitecture | undefined {

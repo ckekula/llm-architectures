@@ -13,6 +13,7 @@ import type {
   Tokenization,
   EmbeddingArchitecture,
   PositionalEncoding,
+  ModelStacks,
   LayerOrganization,
   OutputHead,
   ParameterAccounting,
@@ -42,17 +43,23 @@ export class LLMArchitecture {
     public tokenization: Tokenization,
     public embedding: EmbeddingArchitecture,
     public positionalEncoding: PositionalEncoding,
-    public layerOrganization: LayerOrganization,
+    public stacks: ModelStacks,
     public outputHead: OutputHead,
     public contextArchitecture: ContextArchitecture,
     public kvCacheConfig?: KVCacheConfig,
-  ) {}
+  ) {
+    if (!stacks.encoder && !stacks.decoder) {
+      throw new Error('LLMArchitecture.stacks must have at least one of encoder/decoder.');
+    }
+  }
 
   /**
-   * Number of layers.
+   * Total transformer layers across whichever stacks exist (encoder +
+   * decoder, when both are present). For a decoder-only model this is
+   * just the decoder's layer count, same as before this field existed.
    */
   get numLayers(): number {
-    return this.layerOrganization.layers.totalLayers;
+    return (this.stacks.encoder?.layers.totalLayers ?? 0) + (this.stacks.decoder?.layers.totalLayers ?? 0);
   }
 
   /**
@@ -63,10 +70,17 @@ export class LLMArchitecture {
   }
 
   /**
-   * Returns the canonical block configuration for a layer.
+   * Returns the canonical block configuration for a layer in a specific
+   * stack. Requires the stack name explicitly since an encoder-decoder model
+   * has two independent layer indices.
    */
-  getLayer(layerIndex: number): TransformerBlock {
-    const layers = this.layerOrganization.layers;
+  getLayer(stackName: 'encoder' | 'decoder', layerIndex: number): TransformerBlock {
+    const stack = this.stacks[stackName];
+    if (!stack) {
+      throw new Error(`This architecture has no "${stackName}" stack.`);
+    }
+
+    const layers = stack.layers;
 
     const firstBlock = layers.blocks[0];
     if (firstBlock === undefined) {
@@ -81,7 +95,7 @@ export class LLMArchitecture {
 
     if (blockIndex === undefined) {
       throw new RangeError(
-        `No block pattern entry for layer ${layerIndex}.`,
+        `No block pattern entry for ${stackName} layer ${layerIndex}.`,
       );
     }
 
@@ -89,7 +103,7 @@ export class LLMArchitecture {
 
     if (!block) {
       throw new RangeError(
-        `Layer ${layerIndex} references invalid block ${blockIndex}.`,
+        `${stackName} layer ${layerIndex} references invalid block ${blockIndex}.`,
       );
     }
 
@@ -108,12 +122,21 @@ export class LLMArchitecture {
       data.tokenization,
       data.embedding,
       data.positionalEncoding,
-      data.layerOrganization,
+      data.stacks,
       data.outputHead,
       data.contextArchitecture,
       data.kvCacheConfig,
     );
   }
+}
+
+/** Running totals accumulated across whichever stacks exist, before being packaged into a ParameterAccounting. */
+interface ParameterAccumulator {
+  attention: number;
+  crossAttention: number;
+  feedForward: number;
+  moeExperts: number;
+  normalization: number;
 }
 
 export function computeParameterAccounting(arch: LLMArchitecture): ParameterAccounting {
@@ -146,61 +169,19 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
   }
 
   // ---------------------------------------------------------------------------
-  // Count layers by block configuration
+  // Encoder + decoder stacks
   // ---------------------------------------------------------------------------
 
-  const layerCounts = countBlockOccurrences(
-    arch.layerOrganization.layers,
-  );
+  const acc: ParameterAccumulator = {
+    attention: 0,
+    crossAttention: 0,
+    feedForward: 0,
+    moeExperts: 0,
+    normalization: 0,
+  };
 
-  let attention = 0;
-  let feedForward = 0;
-  let moeExperts = 0;
-  let normalization = 0;
-
-  for (const [blockIndex, count] of layerCounts.entries()) {
-    const block =
-      arch.layerOrganization.layers.blocks[blockIndex];
-
-    if (!block) {
-      throw new Error(
-        `Invalid block index ${blockIndex} in layer pattern.`,
-      );
-    }
-
-    attention +=
-      count * calculateAttentionParameters(
-        dModel,
-        block.attention,
-      );
-
-    feedForward +=
-      count * calculateFeedForwardParameters(
-        dModel,
-        block.feedForward,
-      );
-
-    if (
-      block.feedForward.primitive === FFNType.MoE &&
-      block.moe
-    ) {
-      const expertParams =
-        calculateMoEExpertParameters(
-          dModel,
-          block.moe.config.expertHiddenDim,
-          block.moe.config.numExperts,
-          block.moe.config.numSharedExperts ?? 0,
-        );
-
-      moeExperts += count * expertParams;
-    }
-
-    normalization +=
-      count * calculateNormalizationParameters(
-        dModel,
-        block,
-      );
-  }
+  if (arch.stacks.encoder) accumulateStackParameters(arch.stacks.encoder, dModel, acc);
+  if (arch.stacks.decoder) accumulateStackParameters(arch.stacks.decoder, dModel, acc);
 
   // ---------------------------------------------------------------------------
   // Output head
@@ -220,20 +201,21 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
   const total =
     embedding +
     positionalEncoding +
-    attention +
-    feedForward +
-    normalization +
+    acc.attention +
+    acc.crossAttention +
+    acc.feedForward +
+    acc.normalization +
     outputHead +
     other;
 
   return {
     embedding,
     positionalEncoding,
-    attention,
-    feedForward,
-    moeExperts:
-      moeExperts > 0 ? moeExperts : undefined,
-    normalization,
+    attention: acc.attention,
+    crossAttention: acc.crossAttention > 0 ? acc.crossAttention : undefined,
+    feedForward: acc.feedForward,
+    moeExperts: acc.moeExperts > 0 ? acc.moeExperts : undefined,
+    normalization: acc.normalization,
     outputHead,
     other,
     total,
@@ -243,6 +225,65 @@ export function computeParameterAccounting(arch: LLMArchitecture): ParameterAcco
 }
 
 // Parameter helpers
+
+function accumulateStackParameters(
+  stack: LayerOrganization,
+  dModel: number,
+  acc: ParameterAccumulator,
+): void {
+  const layerCounts = countBlockOccurrences(stack.layers);
+
+  for (const [blockIndex, count] of layerCounts.entries()) {
+    const block = stack.layers.blocks[blockIndex];
+
+    if (!block) {
+      throw new Error(
+        `Invalid block index ${blockIndex} in layer pattern.`,
+      );
+    }
+
+    acc.attention +=
+      count * calculateAttentionParameters(
+        dModel,
+        block.attention,
+      );
+
+    if (block.crossAttention) {
+      acc.crossAttention +=
+        count * calculateAttentionParameters(
+          dModel,
+          block.crossAttention,
+        );
+    }
+
+    acc.feedForward +=
+      count * calculateFeedForwardParameters(
+        dModel,
+        block.feedForward,
+      );
+
+    if (
+      block.feedForward.primitive === FFNType.MoE &&
+      block.moe
+    ) {
+      const expertParams =
+        calculateMoEExpertParameters(
+          dModel,
+          block.moe.config.expertHiddenDim,
+          block.moe.config.numExperts,
+          block.moe.config.numSharedExperts ?? 0,
+        );
+
+      acc.moeExperts += count * expertParams;
+    }
+
+    acc.normalization +=
+      count * calculateNormalizationParameters(
+        dModel,
+        block,
+      );
+  }
+}
 
 function calculateAttentionParameters(
   dModel: number,
@@ -415,8 +456,23 @@ export function computeKVCache(
     );
   }
 
-  const layers =
-    arch.layerOrganization.layers;
+  /*
+   * Autoregressive KV caching is a decoder concept: the decoder's
+   * self-attention cache grows by one token per generation step, which is
+   * what `sequenceLength` here represents. Prefer the decoder stack;
+   * fall back to the encoder for an encoder-only model (e.g. BERT-style),
+   * where "sequenceLength" would instead mean the (fixed) input length.
+   *
+   * Cross-attention K/V are deliberately NOT included: they're computed
+   * once from the encoder's final output and reused for every decode
+   * step, sized by the SOURCE sequence length, not `sequenceLength`.
+   */
+  const stackName: 'encoder' | 'decoder' = arch.stacks.decoder ? 'decoder' : 'encoder';
+  const stack = arch.stacks[stackName];
+  if (!stack) {
+    throw new Error('computeKVCache: architecture has neither an encoder nor a decoder stack.');
+  }
+  const layers = stack.layers;
 
   let bytesPerTokenPerLayer = 0;
 
@@ -430,7 +486,7 @@ export function computeKVCache(
        layerIndex++) {
 
     const block =
-      arch.getLayer(layerIndex);
+      arch.getLayer(stackName, layerIndex);
 
     const {
       numKeyValueHeads,

@@ -10,19 +10,23 @@
  *
  * Every node carries a `path`: the same dotted-path convention `walk()`
  * uses to build `DiffEntry.path` in model.ts (e.g.
- * 'layerOrganization.layers.blocks.0.attention.mechanism'). That's the
+ * 'stacks.decoder.layers.blocks.0.attention.mechanism'). That's the
  * single link between "a box in the diagram" and "an entry in the
  * encyclopedia / a diff row" — no separate id-to-path table to maintain.
  *
  * Repeated layers are NOT unrolled into one node per layer. A model like
  * GPT-3 (96 layers, 2 distinct blocks) renders as 2 block subgraphs inside
- * a single "layer stack" compound node, each annotated with how many
- * layers use it — mirroring the LayerPattern design (base.ts) that avoids
- * allocating N objects for N layers.
+ * a single stack compound node, each annotated with how many layers use
+ * it — mirroring the LayerPattern design (base.ts) that avoids allocating
+ * N objects for N layers.
+ *
+ * A model can have an encoder stack, a decoder stack, or both.
+ * Encoder-decoder models get two stack subgraphs, linked by an "encoder output"
+ * edge representing the data dependency cross-attention introduces
  */
 import type { LLMArchitecture } from './model';
 import type { LayerPattern } from './base';
-import type { TransformerBlock } from './categories';
+import type { Attention, TransformerBlock } from './categories';
 
 export interface GraphNode {
   id: string;
@@ -41,6 +45,10 @@ export interface GraphNode {
     | 'attention.mechanism'
     | 'attention.pattern'
     | 'attention.kernel'
+    | 'crossAttention'
+    | 'crossAttention.mechanism'
+    | 'crossAttention.pattern'
+    | 'crossAttention.kernel'
     | 'feedForward'
     | 'feedForward.activation'
     | 'feedForward.gating'
@@ -69,34 +77,56 @@ export interface ArchitectureGraph {
   edges: GraphEdge[];
 }
 
+type StackName = 'encoder' | 'decoder';
+
 export function buildArchitectureGraph(arch: LLMArchitecture): ArchitectureGraph {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
-  const chain: string[] = []; // ids of top-level pipeline nodes, in order, for sequential edges
 
-  nodes.push({ id: 'tokenization', label: 'Tokenization', category: 'tokenization', path: 'tokenization' });
-  chain.push('tokenization');
-
-  nodes.push({ id: 'embedding', label: 'Embedding', category: 'embedding', path: 'embedding' });
-  chain.push('embedding');
-
-  nodes.push({
+  const tokenizationNode: GraphNode = { id: 'tokenization', label: 'Tokenization', category: 'tokenization', path: 'tokenization' };
+  const embeddingNode: GraphNode = { id: 'embedding', label: 'Embedding', category: 'embedding', path: 'embedding' };
+  const positionalEncodingNode: GraphNode = {
     id: 'positionalEncoding',
     label: `Positional Encoding (${arch.positionalEncoding.primitive})`,
     category: 'positionalEncoding',
     path: 'positionalEncoding',
-  });
-  chain.push('positionalEncoding');
+  };
+  const outputHeadNode: GraphNode = { id: 'outputHead', label: 'Output Head', category: 'outputHead', path: 'outputHead' };
 
-  const layerStack = buildLayerStackNode(arch.layerOrganization.layers, edges);
-  nodes.push(layerStack);
-  chain.push(layerStack.id);
+  nodes.push(tokenizationNode, embeddingNode, positionalEncodingNode);
+  edges.push(
+    { id: 'pipeline-0', source: tokenizationNode.id, target: embeddingNode.id },
+    { id: 'pipeline-1', source: embeddingNode.id, target: positionalEncodingNode.id },
+  );
 
-  nodes.push({ id: 'outputHead', label: 'Output Head', category: 'outputHead', path: 'outputHead' });
-  chain.push('outputHead');
+  const encoderStack = arch.stacks.encoder ? buildStackNode('encoder', arch.stacks.encoder.layers, edges) : undefined;
+  const decoderStack = arch.stacks.decoder ? buildStackNode('decoder', arch.stacks.decoder.layers, edges) : undefined;
 
-  for (let i = 0; i < chain.length - 1; i++) {
-    edges.push({ id: `pipeline-${i}`, source: chain[i]!, target: chain[i + 1]! });
+  // Both stacks consume the SAME embedding/positional-encoding pipeline
+  // the original Transformer explicitly shares the source/target embedding weights.
+  if (encoderStack) {
+    nodes.push(encoderStack);
+    edges.push({ id: 'pipeline-pe-encoder', source: positionalEncodingNode.id, target: encoderStack.id });
+  }
+  if (decoderStack) {
+    nodes.push(decoderStack);
+    edges.push({ id: 'pipeline-pe-decoder', source: positionalEncodingNode.id, target: decoderStack.id });
+  }
+
+  // The encoder's final output is what the decoder's cross-attention reads from
+  if (encoderStack && decoderStack) {
+    edges.push({
+      id: 'pipeline-encoder-decoder',
+      source: encoderStack.id,
+      target: decoderStack.id,
+      label: 'encoder output',
+    });
+  }
+
+  nodes.push(outputHeadNode);
+  const finalStack = decoderStack ?? encoderStack;
+  if (finalStack) {
+    edges.push({ id: 'pipeline-final-output', source: finalStack.id, target: outputHeadNode.id });
   }
 
   return { nodes, edges };
@@ -133,17 +163,19 @@ function groupLayersByBlock(layers: LayerPattern<TransformerBlock>): Map<number,
   return groups;
 }
 
-function buildLayerStackNode(layers: LayerPattern<TransformerBlock>, edges: GraphEdge[]): GraphNode {
+function buildStackNode(stackName: StackName, layers: LayerPattern<TransformerBlock>, edges: GraphEdge[]): GraphNode {
   const layersByBlock = groupLayersByBlock(layers);
   const distinctBlockIndices = [...layersByBlock.keys()].sort((a, b) => a - b);
+  const stackId = `${stackName}Stack`;
+  const stackLabel = stackName === 'encoder' ? 'Encoder Stack' : 'Decoder Stack';
 
   const children = distinctBlockIndices.map((blockIndex) => {
     const block = layers.blocks[blockIndex];
     if (!block) {
-      throw new RangeError(`layers.blocks is missing index ${blockIndex} referenced by the pattern.`);
+      throw new RangeError(`stacks.${stackName}.layers.blocks is missing index ${blockIndex} referenced by the pattern.`);
     }
     const layerIndices = layersByBlock.get(blockIndex) ?? [];
-    return buildBlockNode(block, blockIndex, layerIndices, edges);
+    return buildBlockNode(stackName, block, blockIndex, layerIndices, edges);
   });
 
   // Edges between distinct block types, in the order they actually
@@ -166,32 +198,34 @@ function buildLayerStackNode(layers: LayerPattern<TransformerBlock>, edges: Grap
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
       edges.push({
-        id: `block-transition-${from}-${to}`,
-        source: `block-${from}`,
-        target: `block-${to}`,
+        id: `${stackName}-block-transition-${from}-${to}`,
+        source: `${stackName}-block-${from}`,
+        target: `${stackName}-block-${to}`,
         label: 'alternates',
       });
     }
   }
 
   return {
-    id: 'layerStack',
-    label: `Layer Stack (${layers.totalLayers} layers)`,
+    id: stackId,
+    label: `${stackLabel} (${layers.totalLayers} layers)`,
     category: 'layerStack',
-    path: 'layerOrganization.layers',
+    path: `stacks.${stackName}.layers`,
     children,
-    meta: { totalLayers: layers.totalLayers, distinctBlockCount: distinctBlockIndices.length },
+    meta: { stackName, totalLayers: layers.totalLayers, distinctBlockCount: distinctBlockIndices.length },
   };
 }
 
 function buildBlockNode(
+  stackName: StackName,
   block: TransformerBlock,
   blockIndex: number,
   layerIndices: number[],
   edges: GraphEdge[],
 ): GraphNode {
-  const blockId = `block-${blockIndex}`;
-  const blockPath = `layerOrganization.layers.blocks.${blockIndex}`;
+  const blockId = `${stackName}-block-${blockIndex}`;
+  const blockPath = `stacks.${stackName}.layers.blocks.${blockIndex}`;
+  const labelPrefix = stackName === 'encoder' ? 'Encoder' : 'Decoder';
   const children: GraphNode[] = [];
 
   // Sublayer steps become chained child nodes, in the order the schema
@@ -212,11 +246,12 @@ function buildBlockNode(
 
   return {
     id: blockId,
-    label: `Block ${String.fromCharCode(65 + blockIndex)}`, // Block A, Block B, ...
+    label: `${labelPrefix} Block ${String.fromCharCode(65 + blockIndex)}`, // Encoder Block A, Decoder Block A, ...
     category: 'block',
     path: blockPath,
     children,
     meta: {
+      stackName,
       occurrenceCount: layerIndices.length,
       layerIndices,
     },
@@ -232,45 +267,17 @@ function buildSublayerStepNode(
 ): GraphNode {
   const normalized = step.toLowerCase();
 
-  if (normalized === 'attention') {
-    const attentionPath = `${blockPath}.attention`;
-    const mechanismId = `${stepId}-mechanism`;
-    const patternId = `${stepId}-pattern`;
-    const kernelId = `${stepId}-kernel`;
+  if (normalized === 'attention' || normalized === 'self_attention') {
+    return buildAttentionNode(block.attention, 'Self-Attention', 'attention', stepId, blockPath, edges);
+  }
 
-    // Attention's own 3 sub-choices are a chain too (mechanism -> pattern
-    // -> kernel), not just siblings — previously these were only nested as
-    // children with no edges between them, which is why they rendered as
-    // disconnected dots.
-    edges.push({ id: `${stepId}-edge-0`, source: mechanismId, target: patternId });
-    edges.push({ id: `${stepId}-edge-1`, source: patternId, target: kernelId });
-
-    return {
-      id: stepId,
-      label: 'Attention',
-      category: 'attention',
-      path: attentionPath,
-      children: [
-        {
-          id: mechanismId,
-          label: block.attention.mechanism.primitive,
-          category: 'attention.mechanism',
-          path: `${attentionPath}.mechanism`,
-        },
-        {
-          id: patternId,
-          label: block.attention.pattern.primitive,
-          category: 'attention.pattern',
-          path: `${attentionPath}.pattern`,
-        },
-        {
-          id: kernelId,
-          label: block.attention.kernel.primitive,
-          category: 'attention.kernel',
-          path: `${attentionPath}.kernel`,
-        },
-      ],
-    };
+  if (normalized === 'cross_attention' || normalized === 'crossattention') {
+    if (!block.crossAttention) {
+      throw new Error(
+        `sublayerOrder references "cross_attention" at ${stepId}, but this block has no crossAttention configured.`,
+      );
+    }
+    return buildAttentionNode(block.crossAttention, 'Cross-Attention', 'crossAttention', stepId, blockPath, edges);
   }
 
   if (normalized === 'ffn' || normalized === 'feedforward' || normalized === 'feed_forward') {
@@ -332,4 +339,52 @@ function buildSublayerStepNode(
   // Forward-compatible fallback for sublayer step names we don't recognize
   // yet, rather than throwing — a new model shouldn't break the diagram.
   return { id: stepId, label: step, category: 'unknown', path: blockPath };
+}
+
+/**
+ * Shared by self-attention and cross-attention: both are just an
+ * `Attention` value (mechanism/pattern/kernel)
+ */
+function buildAttentionNode(
+  attention: Attention,
+  label: string,
+  pathSegment: 'attention' | 'crossAttention',
+  stepId: string,
+  blockPath: string,
+  edges: GraphEdge[],
+): GraphNode {
+  const attentionPath = `${blockPath}.${pathSegment}`;
+  const mechanismId = `${stepId}-mechanism`;
+  const patternId = `${stepId}-pattern`;
+  const kernelId = `${stepId}-kernel`;
+
+  edges.push({ id: `${stepId}-edge-0`, source: mechanismId, target: patternId });
+  edges.push({ id: `${stepId}-edge-1`, source: patternId, target: kernelId });
+
+  return {
+    id: stepId,
+    label,
+    category: pathSegment,
+    path: attentionPath,
+    children: [
+      {
+        id: mechanismId,
+        label: attention.mechanism.primitive,
+        category: `${pathSegment}.mechanism`,
+        path: `${attentionPath}.mechanism`,
+      },
+      {
+        id: patternId,
+        label: attention.pattern.primitive,
+        category: `${pathSegment}.pattern`,
+        path: `${attentionPath}.pattern`,
+      },
+      {
+        id: kernelId,
+        label: attention.kernel.primitive,
+        category: `${pathSegment}.kernel`,
+        path: `${attentionPath}.kernel`,
+      },
+    ],
+  };
 }
