@@ -6,7 +6,7 @@ import { layoutArchitectureGraph } from '../lib/layout';
 
 // Toggle off to silence without removing the instrumentation.
 const DEBUG = false;
-const DEBUG_LABELS = false; // shows each node's id on-canvas, next to its label
+const DEBUG_LABELS = false;
 function debugLog(label: string, payload: unknown): void {
   if (DEBUG) console.log(`[ArchitectureDiagram] ${label}`, payload);
 }
@@ -19,12 +19,106 @@ interface NodeData extends Record<string, unknown> {
   label: string;
   category: GraphNode['category'];
   path: string;
+  isExpandable: boolean;
+  isExpanded: boolean;
+  collapsedBackgroundColor?: string;
+  collapsedBorderColor?: string;
+}
+
+interface TintColor {
+  bg: string;
+  border: string;
 }
 
 function indexGraphNodes(nodes: GraphNode[], out: Map<string, GraphNode>): void {
   for (const node of nodes) {
     out.set(node.id, node);
     if (node.children) indexGraphNodes(node.children, out);
+  }
+}
+
+function collectGraphIds(nodes: GraphNode[], out: Set<string>): void {
+  for (const node of nodes) {
+    out.add(node.id);
+    if (node.children) collectGraphIds(node.children, out);
+  }
+}
+
+function collectCollapsibleNodeIds(nodes: GraphNode[], out: Set<string>, inBlockSubtree = false): void {
+  for (const node of nodes) {
+    const hasChildren = Boolean(node.children && node.children.length > 0);
+    const nextInBlockSubtree = inBlockSubtree || node.category === 'block';
+    const isCollapsible = hasChildren && (node.category === 'block' || inBlockSubtree);
+
+    if (isCollapsible) out.add(node.id);
+    if (node.children) collectCollapsibleNodeIds(node.children, out, nextInBlockSubtree);
+  }
+}
+
+function filterNodesByExpansion(nodes: GraphNode[], expandedNodeIds: Set<string>, inBlockSubtree = false): GraphNode[] {
+  return nodes.map((node) => {
+    if (!node.children || node.children.length === 0) return node;
+
+    const nextInBlockSubtree = inBlockSubtree || node.category === 'block';
+    const isCollapsible = node.category === 'block' || inBlockSubtree;
+    const showChildren = !isCollapsible || expandedNodeIds.has(node.id);
+
+    return {
+      ...node,
+      children: showChildren ? filterNodesByExpansion(node.children, expandedNodeIds, nextInBlockSubtree) : undefined,
+    };
+  });
+}
+
+const CONSTITUENT_TINT: Partial<Record<GraphNode['category'], TintColor>> = {
+  attention: { bg: '#fef3c7', border: '#f59e0b' },
+  'attention.mechanism': { bg: '#fef3c7', border: '#f59e0b' },
+  'attention.pattern': { bg: '#fef3c7', border: '#f59e0b' },
+  'attention.kernel': { bg: '#fef3c7', border: '#f59e0b' },
+  crossAttention: { bg: '#ede9fe', border: '#8b5cf6' },
+  'crossAttention.mechanism': { bg: '#ede9fe', border: '#8b5cf6' },
+  'crossAttention.pattern': { bg: '#ede9fe', border: '#8b5cf6' },
+  'crossAttention.kernel': { bg: '#ede9fe', border: '#8b5cf6' },
+  feedForward: { bg: '#d1fae5', border: '#10b981' },
+  'feedForward.activation': { bg: '#d1fae5', border: '#10b981' },
+  'feedForward.gating': { bg: '#d1fae5', border: '#10b981' },
+  moe: { bg: '#a7f3d0', border: '#059669' },
+  normalization: { bg: '#e0f2fe', border: '#0ea5e9' },
+  residual: { bg: '#ffe4e6', border: '#f43f5e' },
+  tokenization: { bg: '#f8fafc', border: '#94a3b8' },
+  embedding: { bg: '#f8fafc', border: '#94a3b8' },
+  positionalEncoding: { bg: '#f8fafc', border: '#94a3b8' },
+  outputHead: { bg: '#f8fafc', border: '#94a3b8' },
+};
+
+const NON_CONSTITUENT_CATEGORIES: Set<GraphNode['category']> = new Set(['layerStack', 'block', 'stackGroup', 'unknown']);
+
+function findFirstConstituentTint(node: GraphNode): TintColor | undefined {
+  if (!node.children || node.children.length === 0) {
+    if (NON_CONSTITUENT_CATEGORIES.has(node.category)) return undefined;
+    return CONSTITUENT_TINT[node.category];
+  }
+
+  for (const child of node.children) {
+    const tint = findFirstConstituentTint(child);
+    if (tint) return tint;
+  }
+
+  return undefined;
+}
+
+function buildCollapsedNodeColors(nodes: GraphNode[], out: Map<string, { bg: string; border: string }>): void {
+  for (const node of nodes) {
+    if (node.children && node.children.length > 0) {
+      const tint = findFirstConstituentTint(node);
+      if (tint) {
+        out.set(node.id, {
+          bg: tint.bg,
+          border: tint.border,
+        });
+      }
+      buildCollapsedNodeColors(node.children, out);
+    }
   }
 }
 
@@ -89,7 +183,14 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
   }
 
   return (
-    <div className="relative h-full w-full box-border rounded-lg border border-dashed border-gray-700 bg-white/40">
+    <div
+      className={`relative h-full w-full box-border rounded-lg border border-dashed border-gray-700 bg-white/40 ${data.isExpandable ? 'cursor-pointer' : ''}`}
+      style={
+        data.isExpandable && !data.isExpanded && data.collapsedBackgroundColor && data.collapsedBorderColor
+          ? { backgroundColor: data.collapsedBackgroundColor, borderColor: data.collapsedBorderColor }
+          : undefined
+      }
+    >
       <Handle type="target" position={Position.Top} />
       <div className="h-12 flex items-center justify-between px-3 text-xs font-medium text-gray-800">
         <span>{data.label}</span>
@@ -103,7 +204,7 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
 const nodeTypes = { archNode: ArchNode, containerNode: ContainerNode };
 
 export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) {
-  const graph = useMemo(() => {
+  const fullGraph = useMemo(() => {
     const g = buildArchitectureGraph(architecture);
 
     // Every node id anywhere in the tree (top-level + nested), so we can
@@ -130,15 +231,47 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
     return g;
   }, [architecture]);
 
+  const fullNodeById = useMemo(() => {
+    const index = new Map<string, GraphNode>();
+    indexGraphNodes(fullGraph.nodes, index);
+    return index;
+  }, [fullGraph]);
+
+  const collapsibleNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    collectCollapsibleNodeIds(fullGraph.nodes, ids);
+    return ids;
+  }, [fullGraph]);
+
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
+
+  const collapsedNodeColors = useMemo(() => {
+    const colors = new Map<string, { bg: string; border: string }>();
+    buildCollapsedNodeColors(fullGraph.nodes, colors);
+    return colors;
+  }, [fullGraph]);
+
+  const graph = useMemo(() => {
+    const nodes = filterNodesByExpansion(fullGraph.nodes, expandedNodeIds);
+    const visibleIds = new Set<string>();
+    collectGraphIds(nodes, visibleIds);
+    const edges = fullGraph.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
+
+    debugLog('1b. visibility after collapse/expand', {
+      expandedNodeIds: [...expandedNodeIds],
+      visibleNodeCount: visibleIds.size,
+      visibleEdgeCount: edges.length,
+    });
+
+    return { nodes, edges };
+  }, [expandedNodeIds, fullGraph]);
+
   const [flowNodes, setFlowNodes] = useState<Node<NodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-
-    const nodeById = new Map<string, GraphNode>();
-    indexGraphNodes(graph.nodes, nodeById);
 
     layoutArchitectureGraph(graph)
       .then((positioned) => {
@@ -178,16 +311,27 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
         }
 
         const nodes: Node<NodeData>[] = positioned.map((pos) => {
-          const source = nodeById.get(pos.id);
+          const source = fullNodeById.get(pos.id);
           if (!source) throw new Error(`Layout produced position for unknown node id "${pos.id}"`);
-          const isContainer = Boolean(source.children && source.children.length > 0);
+          const hasChildren = Boolean(source.children && source.children.length > 0);
+          const isExpandable = hasChildren && collapsibleNodeIds.has(source.id);
+          const isExpanded = !isExpandable || expandedNodeIds.has(source.id);
+          const collapsedColors = collapsedNodeColors.get(source.id);
           return {
             id: pos.id,
             position: { x: pos.x, y: pos.y },
-            data: { label: source.label, category: source.category, path: source.path },
+            data: {
+              label: source.label,
+              category: source.category,
+              path: source.path,
+              isExpandable,
+              isExpanded,
+              collapsedBackgroundColor: collapsedColors?.bg,
+              collapsedBorderColor: collapsedColors?.border,
+            },
             parentId: pos.parentId,
             extent: pos.parentId ? ('parent' as const) : undefined,
-            type: isContainer ? 'containerNode' : 'archNode',
+            type: hasChildren ? 'containerNode' : 'archNode',
             style: { width: pos.width, height: pos.height },
           };
         });
@@ -219,6 +363,7 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
           console.warn('[ArchitectureDiagram] edges with missing endpoints in final node list:', brokenEdges);
         }
 
+        setError(null);
         setFlowNodes(nodes);
         setFlowEdges(edges);
       })
@@ -230,7 +375,21 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
     return () => {
       cancelled = true;
     };
-  }, [graph]);
+  }, [collapsedNodeColors, collapsibleNodeIds, expandedNodeIds, fullNodeById, graph]);
+
+  const handleNodeClick = (_event: React.MouseEvent, node: Node<NodeData>) => {
+    if (!node.data.isExpandable) return;
+
+    setExpandedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(node.id)) {
+        next.delete(node.id);
+      } else {
+        next.add(node.id);
+      }
+      return next;
+    });
+  };
 
   if (error) {
     return <div className="p-4 text-sm text-red-600">Failed to render diagram: {error}</div>;
@@ -238,7 +397,7 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
 
   return (
     <div className="h-full w-full">
-      <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} fitView>
+      <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} onNodeClick={handleNodeClick} fitView>
         <Controls />
       </ReactFlow>
     </div>
