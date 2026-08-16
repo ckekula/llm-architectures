@@ -44,13 +44,17 @@ export interface PositionedNode {
 function toElkNode(node: GraphNode): ElkNode {
   if (node.children && node.children.length > 0) {
     const hasHeader = node.label !== '';
+    const isStacksGroup = node.category === 'stackGroup';
+
     return {
       id: node.id,
       children: node.children.map(toElkNode),
       layoutOptions: {
         'elk.algorithm': 'layered',
         'elk.direction': node.layoutDirection === 'horizontal' ? 'RIGHT' : 'DOWN',
-        'elk.padding': hasHeader ? '[top=48,left=24,bottom=24,right=24]' : '[top=24,left=24,bottom=24,right=24]',
+        'elk.padding': isStacksGroup ? '[top=40,left=24,bottom=40,right=24]'
+          : hasHeader ? '[top=48,left=24,bottom=48,right=24]'
+          : '[top=24,left=24,bottom=24,right=24]',
         'elk.spacing.nodeNode': '24',
       },
     };

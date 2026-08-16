@@ -3,6 +3,14 @@ import { ReactFlow, Controls, Handle, Position, MarkerType, type Node, type Edge
 import { buildArchitectureGraph, type GraphNode, type LLMArchitecture } from 'schema';
 import { layoutArchitectureGraph } from '../lib/layout';
 
+
+// Toggle off to silence without removing the instrumentation.
+const DEBUG = false;
+const DEBUG_LABELS = false; // shows each node's id on-canvas, next to its label
+function debugLog(label: string, payload: unknown): void {
+  if (DEBUG) console.log(`[ArchitectureDiagram] ${label}`, payload);
+}
+
 interface ArchitectureDiagramProps {
   architecture: LLMArchitecture;
 }
@@ -61,6 +69,16 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
   // It exists purely to give ELK something to apply layoutDirection:'horizontal' to,
   // It's top padding is already reduced to match so this doesn't leave a dead gap.
   if (data.label === '') {
+    if (data.category === 'stackGroup') {
+      return (
+        <div className="relative h-full w-full box-border rounded-lg border border-slate-400 bg-slate-50/70">
+          <Handle type="target" position={Position.Top} />
+          {DEBUG_LABELS && <span className="absolute left-1 top-1 text-[9px] text-gray-400">{id}</span>}
+          <Handle type="source" position={Position.Bottom} />
+        </div>
+      );
+    }
+
     return (
       <div className="relative h-full w-full">
         <Handle type="target" position={Position.Top} />
@@ -71,9 +89,9 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
   }
 
   return (
-    <div className="relative h-full w-full box-border rounded-lg border border-dashed border-gray-300 bg-white/40">
+    <div className="relative h-full w-full box-border rounded-lg border border-dashed border-gray-700 bg-white/40">
       <Handle type="target" position={Position.Top} />
-      <div className="h-12 flex items-center justify-between border-b border-dashed border-gray-300 px-3 text-xs font-medium text-gray-500">
+      <div className="h-12 flex items-center justify-between px-3 text-xs font-medium text-gray-800">
         <span>{data.label}</span>
         {DEBUG_LABELS && <span className="text-[9px] text-gray-400">{id}</span>}
       </div>
@@ -83,13 +101,6 @@ function ContainerNode({ id, data }: { id: string; data: NodeData }) {
 }
 
 const nodeTypes = { archNode: ArchNode, containerNode: ContainerNode };
-
-// Toggle off to silence without removing the instrumentation.
-const DEBUG = true;
-const DEBUG_LABELS = true; // shows each node's id on-canvas, next to its label
-function debugLog(label: string, payload: unknown): void {
-  if (DEBUG) console.log(`[ArchitectureDiagram] ${label}`, payload);
-}
 
 export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) {
   const graph = useMemo(() => {
