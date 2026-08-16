@@ -56,11 +56,18 @@ export interface GraphNode {
     | 'normalization'
     | 'residual'
     | 'outputHead'
+    | 'stackGroup'
     | 'unknown';
   /** Dotted path into the LLMArchitecture instance — see module doc. */
   path: string;
   /** ELK/React Flow compound nodes: nested structure, not a second graph. */
   children?: GraphNode[];
+  /**
+   * How THIS node's own children should be arranged relative to each
+   * other. Defaults to 'vertical'. 'horizontal' is for children
+   * that don't have a real execution-order dependency on each other.
+   */
+  layoutDirection?: 'horizontal' | 'vertical';
   /** Diagram-only annotations that aren't schema fields, e.g. repeat counts. */
   meta?: Record<string, unknown>;
 }
@@ -102,18 +109,11 @@ export function buildArchitectureGraph(arch: LLMArchitecture): ArchitectureGraph
   const encoderStack = arch.stacks.encoder ? buildStackNode('encoder', arch.stacks.encoder.layers, edges) : undefined;
   const decoderStack = arch.stacks.decoder ? buildStackNode('decoder', arch.stacks.decoder.layers, edges) : undefined;
 
-  // Both stacks consume the SAME embedding/positional-encoding pipeline
-  // the original Transformer explicitly shares the source/target embedding weights.
-  if (encoderStack) {
-    nodes.push(encoderStack);
-    edges.push({ id: 'pipeline-pe-encoder', source: positionalEncodingNode.id, target: encoderStack.id });
-  }
-  if (decoderStack) {
-    nodes.push(decoderStack);
-    edges.push({ id: 'pipeline-pe-decoder', source: positionalEncodingNode.id, target: decoderStack.id });
-  }
+  // The node that represents "the stacks" at the TOP level of the
+  // pipeline — the stacksGroup wrapper when both exist, otherwise
+  // whichever single stack exists. Pipeline edges connect to THIS.
+  let topLevelStacksNode: GraphNode | undefined;
 
-  // The encoder's final output is what the decoder's cross-attention reads from
   if (encoderStack && decoderStack) {
     edges.push({
       id: 'pipeline-encoder-decoder',
@@ -121,12 +121,35 @@ export function buildArchitectureGraph(arch: LLMArchitecture): ArchitectureGraph
       target: decoderStack.id,
       label: 'encoder output',
     });
+
+    // Without this wrapper, the encoder->decoder edge above gives ELK's
+    // layered algorithm a real dependency, so it ranks them into
+    // different vertical layers.
+    const stacksGroup: GraphNode = {
+      id: 'stacksGroup',
+      label: '', // purely a layout grouping, not a real architectural component — no header text
+      category: 'stackGroup',
+      path: 'stacks',
+      layoutDirection: 'horizontal',
+      children: [encoderStack, decoderStack],
+    };
+    nodes.push(stacksGroup);
+    topLevelStacksNode = stacksGroup;
+  } else if (encoderStack) {
+    nodes.push(encoderStack);
+    topLevelStacksNode = encoderStack;
+  } else if (decoderStack) {
+    nodes.push(decoderStack);
+    topLevelStacksNode = decoderStack;
+  }
+
+  if (topLevelStacksNode) {
+    edges.push({ id: 'pipeline-pe-stacks', source: positionalEncodingNode.id, target: topLevelStacksNode.id });
   }
 
   nodes.push(outputHeadNode);
-  const finalStack = decoderStack ?? encoderStack;
-  if (finalStack) {
-    edges.push({ id: 'pipeline-final-output', source: finalStack.id, target: outputHeadNode.id });
+  if (topLevelStacksNode) {
+    edges.push({ id: 'pipeline-final-output', source: topLevelStacksNode.id, target: outputHeadNode.id });
   }
 
   return { nodes, edges };
@@ -211,6 +234,8 @@ function buildStackNode(stackName: StackName, layers: LayerPattern<TransformerBl
     label: `${stackLabel} (${layers.totalLayers} layers)`,
     category: 'layerStack',
     path: `stacks.${stackName}.layers`,
+    // Distinct block TYPES alternate across depth, they don't run in parallel.
+    layoutDirection: 'horizontal',
     children,
     meta: { stackName, totalLayers: layers.totalLayers, distinctBlockCount: distinctBlockIndices.length },
   };
@@ -343,7 +368,10 @@ function buildSublayerStepNode(
 
 /**
  * Shared by self-attention and cross-attention: both are just an
- * `Attention` value (mechanism/pattern/kernel)
+ * `Attention` value (mechanism/pattern/kernel) — cross-attention isn't a
+ * structurally different thing, only a different data source for its
+ * keys/values (which this graph doesn't need to represent explicitly;
+ * the encoder->decoder pipeline edge already conveys that dependency).
  */
 function buildAttentionNode(
   attention: Attention,

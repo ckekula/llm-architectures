@@ -57,6 +57,19 @@ function ArchNode({ id, data }: { id: string; data: NodeData }) {
 }
 
 function ContainerNode({ id, data }: { id: string; data: NodeData }) {
+  // A pure layout grouping has no label and renders no visible box at all
+  // It exists purely to give ELK something to apply layoutDirection:'horizontal' to,
+  // It's top padding is already reduced to match so this doesn't leave a dead gap.
+  if (data.label === '') {
+    return (
+      <div className="relative h-full w-full">
+        <Handle type="target" position={Position.Top} />
+        {DEBUG_LABELS && <span className="absolute left-1 top-1 text-[9px] text-gray-400">{id}</span>}
+        <Handle type="source" position={Position.Bottom} />
+      </div>
+    );
+  }
+
   return (
     <div className="relative h-full w-full box-border rounded-lg border border-dashed border-gray-300 bg-white/40">
       <Handle type="target" position={Position.Top} />

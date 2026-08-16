@@ -36,16 +36,21 @@ export interface PositionedNode {
  * so a compound node (`children.length > 0`) always gets ELK's layered
  * algorithm applied to its own children, independent of its parent's
  * layout direction.
+ *
+ * Direction defaults to DOWN unless the node opts into `layoutDirection: 'horizontal'`
+ *
+ * Top padding is reserved for the header bar `ContainerNode` renders
  */
 function toElkNode(node: GraphNode): ElkNode {
   if (node.children && node.children.length > 0) {
+    const hasHeader = node.label !== '';
     return {
       id: node.id,
       children: node.children.map(toElkNode),
       layoutOptions: {
         'elk.algorithm': 'layered',
-        'elk.direction': 'DOWN',
-        'elk.padding': '[top=48,left=24,bottom=24,right=24]',
+        'elk.direction': node.layoutDirection === 'horizontal' ? 'RIGHT' : 'DOWN',
+        'elk.padding': hasHeader ? '[top=48,left=24,bottom=24,right=24]' : '[top=24,left=24,bottom=24,right=24]',
         'elk.spacing.nodeNode': '24',
       },
     };
