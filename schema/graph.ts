@@ -3,22 +3,13 @@
  * --------
  * A DERIVED projection of `LLMArchitecture` into nodes/edges suitable for
  * ELK.js layout + React Flow rendering: computed on demand from the schema.
- *
- * No positions (x/y) are produced here — that's ELK's job, downstream,
- * client-side. This module only decides WHAT nodes and edges exist and how
- * they nest, not WHERE they sit on screen.
+ * This module only decides WHAT nodes and edges exist and how they nest.
  *
  * Every node carries a `path`: the same dotted-path convention `walk()`
  * uses to build `DiffEntry.path` in model.ts (e.g.
  * 'stacks.decoder.layers.blocks.0.attention.mechanism'). That's the
  * single link between "a box in the diagram" and "an entry in the
  * encyclopedia / a diff row" — no separate id-to-path table to maintain.
- *
- * Repeated layers are NOT unrolled into one node per layer. A model like
- * GPT-3 (96 layers, 2 distinct blocks) renders as 2 block subgraphs inside
- * a single stack compound node, each annotated with how many layers use
- * it — mirroring the LayerPattern design (base.ts) that avoids allocating
- * N objects for N layers.
  *
  * A model can have an encoder stack, a decoder stack, or both.
  * Encoder-decoder models get two stack subgraphs, linked by an "encoder output"

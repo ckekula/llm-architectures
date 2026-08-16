@@ -187,7 +187,8 @@ export function ArchitectureDiagram({ architecture }: ArchitectureDiagramProps) 
           target: edge.target,
           label: edge.label,
           style: { strokeWidth: 1.5, stroke: '#000000' },
-          markerEnd: { type: MarkerType.ArrowClosed }
+          markerEnd: { type: MarkerType.ArrowClosed },
+          type: 'smoothstep',
         }));
 
         // Final check: cross-reference every edge's endpoints against the
